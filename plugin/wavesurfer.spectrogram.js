@@ -130,40 +130,64 @@ WaveSurfer.Spectrogram = {
     getFrequencies: function(callback) {
         var fftSamples = this.fftSamples;
         var buffer = this.buffer = this.wavesurfer.backend.buffer;
+        var channelOne = buffer.getChannelData(0);
+        var bufferLength = buffer.length;
+        var sampleRate = buffer.sampleRate;
+        var frequencies = [];
+        var noverlap = fftSamples / 2;
 
         if (! buffer) {
             this.fireEvent('error', 'Web Audio buffer is not available');
             return;
         }
+
+        var samplesPerPx = buffer.length / this.canvas.width;
+        /*
+        //Find the nearest power of two:
+        var idealBufferSize = Math.pow(2, Math.round( Math.log(samplesPerPx) / Math.log(2)));
+        //Buffer size must be within [256, 16834]
+        var bufferSize = Math.min(16384, Math.max(256,idealBufferSize));
+        */
         
-        var frequencies = [];
-        var context = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, buffer.length, buffer.sampleRate);
-        var source = context.createBufferSource();
-        var processor = context.createScriptProcessor ?
-            context.createScriptProcessor(0, 1, 1) : context.createJavaScriptNode(0, 1, 1);
+        var fft = new FFT(fftSamples, sampleRate);
 
-        var analyser = context.createAnalyser();
-        analyser.fftSize = fftSamples;
-        analyser.smoothingTimeConstant = (this.width / buffer.duration < 10) ? 0.75 : 0.25;
-    
-        source.buffer = buffer;
+        var hannWindowValues = new Float32Array(fftSamples);
+        for (var i = 0; i<fftSamples; i++) {
+            hannWindowValues[i] = WindowFunction.Hann(fftSamples, i);
+        }
 
-        source.connect(analyser);
-        analyser.connect(processor);
-        processor.connect(context.destination);
+        var maxBuffersCount = Math.floor(bufferLength/ (fftSamples - noverlap));
 
-        processor.onaudioprocess = function () {
-            var array = new Uint8Array(analyser.frequencyBinCount);
-            analyser.getByteFrequencyData(array);
-            frequencies.push(array);
-        };
+        var currentOffset = 0;
+        var hasMoreData = true;
 
-        source.start(0);
-        context.startRendering();
+        for (var i=0; i<maxBuffersCount && hasMoreData; i++) {
+            var segment = new Float32Array(fftSamples);
+            var realValueLength = fftSamples;
+            if (currentOffset + fftSamples > channelOne.length) {
+                realValueLength = channelOne.length - currentOffset;
+            }
+            for (var j = 0; j<realValueLength; j++) {
+                segment[j] = channelOne[currentOffset + j] * hannWindowValues[j];
+            }
+            for (; j<fftSamples; j++) {
+                segment[j] = 0;
+            }
 
-        var my = this;
-        context.oncomplete = function() { callback(frequencies, my); };
+            if (segment.length == fftSamples) {
+                fft.forward(segment);
+                var spectrum = fft.spectrum;
+                var array = new Uint8Array(fftSamples/2);
+                for (var j = 0; j<fftSamples/2; j++) {
+                    array[j] = Math.max(-255, Math.log10(spectrum[j])*45);
+                }
+                frequencies.push(array);
+            }
+            currentOffset += (fftSamples - noverlap);
+        }
+        callback(frequencies, this);
     },
+
 
     loadFrequenciesData: function (url) {
         var my = this;
